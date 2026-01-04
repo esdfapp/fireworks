@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sound Firework Screensaver</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            overflow: hidden;
+            font-family: 'Segoe UI', sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: rgba(0,0,0,0.7);
+            z-index: 10;
+            transition: opacity 0.5s;
+        }
+        #startBtn {
+            padding: 15px 40px;
+            font-size: 20px;
+            cursor: pointer;
+            background: transparent;
+            color: #fff;
+            border: 2px solid #fff;
+            border-radius: 50px;
+            transition: all 0.3s;
+            letter-spacing: 2px;
+        }
+        #startBtn:hover {
+            background: #fff;
+            color: #000;
+            box-shadow: 0 0 20px rgba(255,255,255,0.5);
+        }
+    </style>
+</head>
+<body>
+    <div id="overlay"><button id="startBtn">START FIREWORK</button></div>
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        let width, height;
+        let audioCtx;
+        
+        // 花火のインスタンス管理
+        const fireworks = [];
+        
+        // --- 提供された音声ロジック ---
+        const playSoundSequence = (t) => {
+            if (!audioCtx) return;
+
+            // Layer 1: Launch (0s ~ 1.59s)
+            // 上昇音
+            {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(2000, t + 0);
+                osc.frequency.linearRampToValueAtTime(1474, t + 0 + 1.431);
+                gain.gain.setValueAtTime(0.01, t + 0);
+                gain.gain.linearRampToValueAtTime(0.001, t + 0 + 1.59);
+
+                osc.start(t + 0);
+                osc.stop(t + 0 + 1.59);
+            }
+
+            // Layer 2: Explode (1.85s ~ 3.35s)
+            // 爆発音
+            {
+                const bufferSize = audioCtx.sampleRate * 1.5;
+                const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    data[i] = Math.random() * 2 - 1;
+                }
+                const noise = audioCtx.createBufferSource();
+                noise.buffer = buffer;
+
+                const filter = audioCtx.createBiquadFilter();
+                filter.type = 'bandpass';
+                filter.frequency.value = 370;
+
+                const gain = audioCtx.createGain();
+                gain.gain.setValueAtTime(0.5, t + 1.85);
+                gain.gain.exponentialRampToValueAtTime(0.01, t + 1.85 + 1.5);
+
+                noise.connect(filter);
+                filter.connect(gain);
+                gain.connect(audioCtx.destination);
+
+                noise.start(t + 1.85);
+                noise.stop(t + 1.85 + 1.5);
+            }
+
+            // Layer 3: Crackle (2.19s ~ 5.54s)
+            // パチパチ音
+            {
+                const bufferSize = audioCtx.sampleRate * 3.35;
+                const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    data[i] = Math.random() * 2 - 1;
+                }
+                const noise = audioCtx.createBufferSource();
+                noise.buffer = buffer;
+
+                const filter = audioCtx.createBiquadFilter();
+                filter.type = 'highpass';
+                filter.frequency.value = 6000;
+
+                const gain = audioCtx.createGain();
+                gain.gain.setValueAtTime(0.15, t + 2.19);
+                gain.gain.linearRampToValueAtTime(0.001, t + 2.19 + 3.35);
+
+                noise.connect(filter);
+                filter.connect(gain);
+                gain.connect(audioCtx.destination);
+
+                // LFO
+                const lfo = audioCtx.createOscillator();
+                lfo.type = 'sawtooth';
+                lfo.frequency.value = 20;
+                const lfoGain = audioCtx.createGain();
+                lfoGain.gain.value = 0.08;
+                lfo.connect(lfoGain);
+                lfo.start(t + 2.19);
+                lfo.stop(t + 2.19 + 3.35);
+
+                const lfoModGain = audioCtx.createGain();
+                lfoModGain.gain.value = 1.0;
+                lfoGain.connect(lfoModGain.gain);
+                gain.disconnect();
+                gain.connect(lfoModGain);
+                lfoModGain.connect(audioCtx.destination);
+
+                noise.start(t + 2.19);
+                noise.stop(t + 2.19 + 3.35);
+            }
+        };
+
+        // --- アニメーションクラス ---
+
+        class Firework {
+            constructor() {
+                this.startTime = audioCtx.currentTime;
+                // 画面中央付近から打ち上げ
+                this.x = width / 2 + (Math.random() - 0.5) * width * 0.6;
+                this.targetY = height * 0.15 + Math.random() * height * 0.25;
+                this.startY = height;
+                this.y = this.startY;
+                
+                this.exploded = false;
+                this.particles = [];
+                
+                // 音声再生開始
+                playSoundSequence(this.startTime);
+            }
+
+            update(now) {
+                const elapsed = now - this.startTime;
+
+                // Phase 1: Launch (0 ~ 1.85s)
+                // 音声のExplode開始(1.85s)に合わせて到達するように調整
+                if (elapsed < 1.85) {
+                    const progress = elapsed / 1.85;
+                    // Ease out cubic: 徐々に減速
+                    const ease = 1 - Math.pow(1 - progress, 3);
+                    this.y = this.startY - (this.startY - this.targetY) * ease;
+                    
+                    // 上昇中の尾
+                    if (Math.random() < 0.4) {
+                        this.particles.push(new TailParticle(this.x, this.y));
+                    }
+                } 
+                // Phase 2: Explode (1.85s ~)
+                else if (!this.exploded) {
+                    this.exploded = true;
+                    this.createExplosion();
+                }
+
+                // パーティクルの更新
+                this.particles.forEach(p => p.update(elapsed));
+                this.particles = this.particles.filter(p => p.life > 0);
+
+                // 寿命 (Crackleが終わる頃まで)
+                return elapsed < 6.0;
+            }
+
+            draw(ctx) {
+                if (!this.exploded) {
+                    // 打ち上げ玉
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, 3, 0, Math.PI * 2);
+                    ctx.fillStyle = '#fff';
+                    ctx.shadowBlur = 10;
+                    ctx.shadowColor = '#fff';
+                    ctx.fill();
+                    ctx.shadowBlur = 0;
+                }
+
+                this.particles.forEach(p => p.draw(ctx));
+            }
+
+            createExplosion() {
+                const hue = Math.random() * 360;
+                const color = `hsl(${hue}, 100%, 60%)`;
+                
+                // 爆発パーティクル (Explode音に対応)
+                for (let i = 0; i < 120; i++) {
+                    this.particles.push(new ExplosionParticle(this.x, this.y, color));
+                }
+                
+                // パチパチパーティクル (Crackle音に対応)
+                // 音声は2.19sからなので、Explode(1.85s)の0.34s後に発生させる
+                setTimeout(() => {
+                    for (let i = 0; i < 60; i++) {
+                        this.particles.push(new CrackleParticle(this.x, this.y));
+                    }
+                }, 340);
+            }
+        }
+
+        class TailParticle {
+            constructor(x, y) {
+                this.x = x + (Math.random() - 0.5) * 2;
+                this.y = y + (Math.random() - 0.5) * 10;
+                this.life = 1.0;
+                this.decay = 0.03;
+            }
+            update() { this.life -= this.decay; }
+            draw(ctx) {
+                ctx.fillStyle = `rgba(200, 200, 200, ${this.life * 0.5})`;
+                ctx.fillRect(this.x, this.y, 2, 2);
+            }
+        }
+
+        class ExplosionParticle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                const angle = Math.random() * Math.PI * 2;
+                const speed = Math.random() * 6 + 2;
+                this.vx = Math.cos(angle) * speed;
+                this.vy = Math.sin(angle) * speed;
+                this.life = 1.0;
+                this.decay = 0.008 + Math.random() * 0.01;
+                this.color = color;
+                this.gravity = 0.08;
+                this.friction = 0.96;
+            }
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.vy += this.gravity;
+                this.vx *= this.friction;
+                this.vy *= this.friction;
+                this.life -= this.decay;
+            }
+            draw(ctx) {
+                ctx.globalAlpha = Math.max(0, this.life);
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 2.5, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = 1.0;
+            }
+        }
+
+        class CrackleParticle {
+            constructor(x, y) {
+                // 爆発の中心からある程度広がった位置に出現させる
+                const angle = Math.random() * Math.PI * 2;
+                const dist = Math.random() * 100;
+                this.x = x + Math.cos(angle) * dist;
+                this.y = y + Math.sin(angle) * dist;
+                
+                this.vx = (Math.random() - 0.5) * 1;
+                this.vy = (Math.random() - 0.5) * 1;
+                this.life = 1.0;
+                this.decay = 0.005;
+                this.gravity = 0.03;
+                this.flashPhase = Math.random() * 10;
+            }
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.vy += this.gravity;
+                this.life -= this.decay;
+                this.flashPhase++;
+            }
+            draw(ctx) {
+                // LFOのように点滅させる
+                if (Math.sin(this.flashPhase) > 0) {
+                    ctx.fillStyle = `rgba(255, 220, 100, ${this.life})`; // Gold
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, 1.5, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+        }
+
+        // --- メインループ ---
+
+        function resize() {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            // 残像効果（黒で薄く塗りつぶす）
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+            ctx.fillRect(0, 0, width, height);
+
+            if (!audioCtx) return;
+            const now = audioCtx.currentTime;
+
+            // ランダムな間隔で打ち上げ
+            if (Math.random() < 0.008) { // 確率調整
+                fireworks.push(new Firework());
+            }
+
+            // 更新と描画
+            for (let i = fireworks.length - 1; i >= 0; i--) {
+                const alive = fireworks[i].update(now);
+                fireworks[i].draw(ctx);
+                if (!alive) {
+                    fireworks.splice(i, 1);
+                }
+            }
+        }
+
+        // --- 初期化 ---
+
+        document.getElementById('startBtn').addEventListener('click', () => {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            audioCtx = new AudioContext();
+            
+            const overlay = document.getElementById('overlay');
+            overlay.style.opacity = 0;
+            setTimeout(() => overlay.style.display = 'none', 500);
+            
+            // 最初の一発
+            fireworks.push(new Firework());
+            
+            animate();
+        });
+
+        window.addEventListener('resize', resize);
+        resize();
+    </script>
+</body>
+</html>
